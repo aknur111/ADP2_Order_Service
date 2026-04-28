@@ -10,3 +10,8 @@ type PaymentRepository interface {
 	GetByOrderID(ctx context.Context, orderID string) (*domain.Payment, error)
 	EnsureSchema(ctx context.Context) error
 }
+
+type EventPublisher interface {
+	PublishPaymentCompleted(ctx context.Context, event domain.PaymentEvent) error
+	Close() error
+}
