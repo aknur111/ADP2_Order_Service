@@ -41,4 +41,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-// replace github.com/aknur111/my-user-service-gen => ../my-user-service-gen

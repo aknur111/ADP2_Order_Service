@@ -13,4 +13,5 @@ type Payment struct {
 	TransactionID string        `json:"transaction_id"`
 	Amount        int64         `json:"amount"`
 	Status        PaymentStatus `json:"status"`
+	CustomerEmail string        `json:"customer_email"`
 }

@@ -13,8 +13,9 @@ import (
 
 	"payment-service/internal/app"
 	"payment-service/internal/repository"
-	httptransport "payment-service/internal/transport/http"
 	grpctransport "payment-service/internal/transport/grpc"
+	httptransport "payment-service/internal/transport/http"
+	"payment-service/internal/transport/mq"
 	"payment-service/internal/usecase"
 
 	paymentv1 "github.com/aknur111/my-user-service-gen/service/payment/v1"
@@ -57,7 +58,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	paymentUC := usecase.NewPaymentUsecase(paymentRepo)
+	var publisher usecase.EventPublisher
+	if cfg.RabbitMQURL != "" {
+		pub, err := mq.NewRabbitPublisher(cfg.RabbitMQURL)
+		if err != nil {
+			slog.Error("failed to connect RabbitMQ publisher", "error", err)
+		} else {
+			publisher = pub
+			defer pub.Close()
+			slog.Info("RabbitMQ publisher connected")
+		}
+	}
+
+	paymentUC := usecase.NewPaymentUsecase(paymentRepo, publisher)
 
 	grpcHandler := grpctransport.NewPaymentGRPCHandler(paymentUC)
 

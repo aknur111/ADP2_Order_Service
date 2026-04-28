@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
 	"payment-service/internal/domain"
 	"payment-service/internal/usecase"
 
@@ -39,7 +40,7 @@ func (h *PaymentGRPCHandler) ProcessPayment(
 		return nil, status.Error(codes.InvalidArgument, "amount must be greater than 0")
 	}
 
-	payment, err := h.uc.CreatePayment(ctx, req.GetOrderId(), req.GetAmount())
+	payment, err := h.uc.CreatePayment(ctx, req.GetOrderId(), req.GetAmount(), "customer@example.com")
 	if err != nil {
 		if errors.Is(err, domain.ErrInvalidAmount) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())

@@ -3,9 +3,10 @@ package app
 import "os"
 
 type Config struct {
-	HTTPAddr     string
-	GRPCAddr     string
-	DBDSN        string
+	HTTPAddr    string
+	GRPCAddr    string
+	DBDSN       string
+	RabbitMQURL string
 }
 
 func LoadConfig() Config {
@@ -20,8 +21,9 @@ func LoadConfig() Config {
 	}
 
 	return Config{
-		HTTPAddr: httpAddr,
-		GRPCAddr: grpcAddr,
-		DBDSN:    os.Getenv("DB_DSN"),
+		HTTPAddr:    httpAddr,
+		GRPCAddr:    grpcAddr,
+		DBDSN:       os.Getenv("DB_DSN"),
+		RabbitMQURL: os.Getenv("RABBITMQ_URL"),
 	}
 }

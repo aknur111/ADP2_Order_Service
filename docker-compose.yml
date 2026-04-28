@@ -1,6 +1,23 @@
 version: "3.9"
 
 services:
+  rabbitmq:
+    image: rabbitmq:management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   order-db:
     image: postgres:16-alpine
     container_name: order-db
@@ -9,7 +26,7 @@ services:
       POSTGRES_PASSWORD: 110755
       POSTGRES_DB: order_db
     ports:
-      - "5432:5432"
+      - "5435:5432"
     volumes:
       - order-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -35,6 +52,24 @@ services:
       timeout: 5s
       retries: 5
 
+  notification-db:
+    image: postgres:16-alpine
+    container_name: notification-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 110755
+      POSTGRES_DB: notification_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - notification-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notification_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+
   payment-service:
     build:
       context: .
@@ -43,10 +78,13 @@ services:
     depends_on:
       payment-db:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       HTTP_ADDR: ":8081"
       GRPC_ADDR: ":50051"
       DB_DSN: "postgres://postgres:110755@payment-db:5432/payment_db?sslmode=disable"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
     ports:
       - "8081:8081"
       - "50051:50051"
@@ -74,6 +112,23 @@ services:
       - "50052:50052"
     restart: unless-stopped
 
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    container_name: notification-service
+    depends_on:
+      notification-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      DB_DSN: "postgres://postgres:110755@notification-db:5432/notification_db?sslmode=disable"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+    restart: unless-stopped
+
 volumes:
   order-db-data:
   payment-db-data:
+  notification-db-data:
+  rabbitmq-data:

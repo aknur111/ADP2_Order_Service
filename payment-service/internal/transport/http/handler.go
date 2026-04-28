@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"payment-service/internal/domain"
 	"payment-service/internal/usecase"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -14,8 +15,9 @@ type Handler struct {
 }
 
 type createPaymentRequest struct {
-	OrderID string `json:"order_id" binding:"required"`
-	Amount  int64  `json:"amount"`
+	OrderID       string `json:"order_id" binding:"required"`
+	Amount        int64  `json:"amount"`
+	CustomerEmail string `json:"customer_email"`
 }
 
 type errorResponse struct {
@@ -56,9 +58,12 @@ func (h *Handler) CreatePayment(c *gin.Context) {
 		h.respondError(c, http.StatusBadRequest, err, "INVALID_REQUEST")
 		return
 	}
+	if req.CustomerEmail == "" {
+		req.CustomerEmail = "customer@example.com"
+	}
 	slog.Info("create payment request", "request_id", requestID, "order_id", req.OrderID)
 
-	payment, err := h.uc.CreatePayment(c.Request.Context(), req.OrderID, req.Amount)
+	payment, err := h.uc.CreatePayment(c.Request.Context(), req.OrderID, req.Amount, req.CustomerEmail)
 	if err != nil {
 		if errors.Is(err, domain.ErrInvalidAmount) {
 			h.respondError(c, http.StatusBadRequest, err, "INVALID_AMOUNT")
