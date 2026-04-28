@@ -46,7 +46,9 @@ Notification Service consumer  (manual ACK, QoS=1)
       DLX: payment.dlx  →  Queue: payment.completed.dlq
 ```
 
-Mermaid diagram: [`image/assignment3-diagram.md`](image/assignment3-diagram.md)
+Mermaid diagram including Notification service: ![Architecture Diagram](image/Screenshot%202026-04-28%20at%2023.18.23.png)
+Also you can see there [`image/assignment3-diagram.md`](image/assignment3-diagram.md)
+
 Original diagram: ![Architecture Diagram](image/Screenshot%202026-04-10%20at%2009.26.48.png)
 
 ---
