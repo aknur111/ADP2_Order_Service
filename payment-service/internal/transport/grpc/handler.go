@@ -5,12 +5,10 @@ import (
 	"errors"
 	"log/slog"
 	"time"
-
 	"payment-service/internal/domain"
 	"payment-service/internal/usecase"
 
 	paymentv1 "github.com/aknur111/my-user-service-gen/service/payment/v1"
-
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
