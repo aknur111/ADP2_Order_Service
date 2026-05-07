@@ -6,12 +6,17 @@ import (
 )
 
 type Config struct {
-	HTTPAddr              string
-	GRPCAddr              string
-	DBDSNorder            string
-	PaymentGRPCAddr       string
-	HTTPTimeoutSeconds    int
-	StreamPollIntervalMs  int
+	HTTPAddr             string
+	GRPCAddr             string
+	DBDSNorder           string
+	PaymentGRPCAddr      string
+	HTTPTimeoutSeconds   int
+	StreamPollIntervalMs int
+	RedisAddr            string
+	CacheTTLSeconds      int
+	RateLimitEnabled     bool
+	RateLimitRequests    int
+	RateLimitWindowSec   int
 }
 
 func LoadConfig() Config {
@@ -39,6 +44,34 @@ func LoadConfig() Config {
 		grpcAddr = ":50052"
 	}
 
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
+	cacheTTL := 300
+	if v := os.Getenv("ORDER_CACHE_TTL_SECONDS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			cacheTTL = parsed
+		}
+	}
+
+	rateLimitEnabled := os.Getenv("RATE_LIMIT_ENABLED") == "true"
+
+	rateLimitRequests := 10
+	if v := os.Getenv("RATE_LIMIT_REQUESTS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			rateLimitRequests = parsed
+		}
+	}
+
+	rateLimitWindowSec := 60
+	if v := os.Getenv("RATE_LIMIT_WINDOW_SECONDS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			rateLimitWindowSec = parsed
+		}
+	}
+
 	return Config{
 		HTTPAddr:             httpAddr,
 		GRPCAddr:             grpcAddr,
@@ -46,5 +79,10 @@ func LoadConfig() Config {
 		PaymentGRPCAddr:      os.Getenv("PAYMENT_GRPC_ADDR"),
 		HTTPTimeoutSeconds:   timeoutSeconds,
 		StreamPollIntervalMs: pollIntervalMs,
+		RedisAddr:            redisAddr,
+		CacheTTLSeconds:      cacheTTL,
+		RateLimitEnabled:     rateLimitEnabled,
+		RateLimitRequests:    rateLimitRequests,
+		RateLimitWindowSec:   rateLimitWindowSec,
 	}
 }

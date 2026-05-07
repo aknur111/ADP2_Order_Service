@@ -1,4 +1,4 @@
-# ADP2 — Order Service (Assignments 2 & 3)
+# ADP2 — Order Service (Assignments 2, 3 & 4)
 
 ## Repository Links
 
@@ -6,6 +6,230 @@
 |---|---|---|
 | **Proto Repository** | Source `.proto` files | `https://github.com/aknur111/my-user-service-protos` |
 | **Generated Code Repository** | Auto-generated `.pb.go` files (v1.2.0) | `https://github.com/aknur111/my-user-service-gen` |
+
+---
+
+## Assignment 4 — Performance Optimization & External Integrations
+
+### What was added on top of Assignment 3
+
+| Component | Assignment 3 | Assignment 4 |
+|---|---|---|
+| Order GET | always queries Postgres | **Redis cache-aside, TTL 300 s** |
+| Cache invalidation | — | **DEL on status change (paid, failed, cancelled)** |
+| Rate limiter | — | **Redis counter per IP, 10 req / 60 s, HTTP 429** |
+| Notification idempotency | Postgres `processed_events` table | **Redis key `notification:processed:{event_id}`** |
+| Notification retries | RabbitMQ requeue loop | **exponential backoff in worker (2 s, 4 s, 8 s)** |
+| Provider abstraction | inline log statement | **`EmailSender` interface + `SimulatedEmailSender`** |
+| DLQ | requeue × 3 then NACK | **worker exhausts retries, consumer NACKs to DLQ** |
+| Redis | — | **Redis 7 container, exposed on localhost:6379** |
+
+---
+
+### Redis Cache-aside Pattern (Order Service)
+
+Every `GET /orders/:id` follows the cache-aside pattern:
+
+1. Check Redis key `order:{order_id}`.
+2. **Cache hit** → return the cached JSON order immediately (logs `cache hit`).
+3. **Cache miss** → query Postgres (logs `cache miss`), store result in Redis with TTL, return order.
+
+**Cache key format:** `order:{order_id}`
+**TTL:** configurable via `ORDER_CACHE_TTL_SECONDS` (default 300 s).
+
+**Cache invalidation** happens immediately after any `UpdateStatus` call:
+- After payment (Pending → Paid or Failed): `DEL order:{id}`
+- After cancel (Pending → Cancelled): `DEL order:{id}`
+
+This prevents serving stale order status after a payment completes.
+
+Cache operations are non-blocking: if Redis is unavailable, the service falls back to Postgres transparently.
+
+---
+
+### Redis Rate Limiter (Order Service)
+
+A Redis-based rate limiter middleware limits requests by client IP using the INCR + EXPIRE pattern.
+
+- **Config:** `RATE_LIMIT_ENABLED=true`, `RATE_LIMIT_REQUESTS=10`, `RATE_LIMIT_WINDOW_SECONDS=60`
+- **Key:** `rate_limit:{ip}`
+- **Behavior:** increments counter per IP; if count exceeds limit returns `HTTP 429 Too Many Requests`.
+- Logs `rate limit allowed` or `rate limit exceeded` on each request.
+
+---
+
+### Provider Adapter Pattern (Notification Service)
+
+The `EmailSender` interface decouples the RabbitMQ consumer from any specific provider:
+
+```go
+type EmailSender interface {
+    SendPaymentCompleted(ctx context.Context, event domain.PaymentEvent) error
+}
+```
+
+The `SimulatedEmailSender` (selected when `PROVIDER_MODE=SIMULATED`):
+- Simulates network latency with `time.Sleep(50–250 ms)`.
+- Simulates random transient failures (~20 % of requests).
+- Always fails for `customer_email = fail@example.com`.
+- Logs a success line on successful delivery.
+
+The consumer calls the `NotificationWorker` which calls the `EmailSender`; no provider-specific code lives in the consumer.
+
+---
+
+### Reliable Background Jobs (Notification Service)
+
+**Flow:** RabbitMQ Consumer → NotificationWorker → EmailSender Adapter
+
+**Idempotency via Redis:**
+
+Before sending, the worker checks `notification:processed:{event_id}` in Redis.
+- Key exists → duplicate, skip send, ACK message.
+- Key absent → proceed with send.
+After successful send, the worker writes the key with TTL (`NOTIFICATION_IDEMPOTENCY_TTL_SECONDS=86400`).
+
+The existing Postgres `processed_events` table is retained from Assignment 3.
+
+**Retry policy with exponential backoff:**
+
+| Retry | Wait before attempt |
+|---|---|
+| 1 | 2 s |
+| 2 | 4 s |
+| 3 | 8 s |
+
+Formula: `backoffBase * 2^(retry-1)`, configurable via `NOTIFICATION_BACKOFF_BASE_SECONDS` and `NOTIFICATION_MAX_RETRIES`.
+
+**ACK/NACK rules:**
+- ACK only after successful send AND `MarkProcessed` succeeds.
+- Duplicate event: ACK without sending.
+- All retries exhausted: NACK without requeue → message routes to `payment.completed.dlq`.
+
+---
+
+### Architecture Diagram (Assignment 4)
+
+See [`image/assignment4-diagram.md`](image/assignment4-diagram.md) for the Mermaid diagram.
+
+---
+
+### How to Run (Assignment 4)
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Check all containers are running:
+```bash
+docker compose ps
+```
+
+Services:
+
+| Service | Address |
+|---|---|
+| order-service HTTP | `localhost:8080` |
+| order-service gRPC | `localhost:50052` |
+| payment-service HTTP | `localhost:8081` |
+| payment-service gRPC | `localhost:50051` |
+| notification-service | (consumer only) |
+| RabbitMQ AMQP | `localhost:5672` |
+| RabbitMQ Management UI | `localhost:15672` — **guest / guest** |
+| Redis | `localhost:6379` |
+| order-db | `localhost:5435` |
+| payment-db | `localhost:5433` |
+| notification-db | `localhost:5434` |
+
+---
+
+### Testing Cache Miss and Hit
+
+Create an order:
+```bash
+curl -v -X POST http://localhost:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":"cust-1","item_name":"Laptop","amount":50000}'
+```
+
+Copy the `id` from the response. Then run GET twice:
+```bash
+curl -v http://localhost:8080/orders/<ORDER_ID>
+curl -v http://localhost:8080/orders/<ORDER_ID>
+```
+
+Expected in order-service logs:
+- First GET: `cache miss`
+- Second GET: `cache hit`
+
+---
+
+### Checking Redis Keys
+
+```bash
+docker exec -it redis redis-cli
+KEYS *
+GET order:<ORDER_ID>
+```
+
+---
+
+### Testing Notification Retry and DLQ
+
+Send a payment with the always-failing email:
+```bash
+curl -v -X POST http://localhost:8081/payments \
+  -H "Content-Type: application/json" \
+  -d '{"order_id":"ord-fail-1","amount":5000,"customer_email":"fail@example.com"}'
+```
+
+Watch notification logs:
+```bash
+docker compose logs -f notification-service
+```
+
+Expected output:
+```
+[NotificationWorker] provider error, retrying  retry=1  backoff_seconds=2
+[NotificationWorker] provider error, retrying  retry=2  backoff_seconds=4
+[NotificationWorker] provider error, retrying  retry=3  backoff_seconds=8
+[NotificationWorker] all retries exhausted
+notification worker failed, routing to DLQ
+```
+
+Then open `http://localhost:15672` → Queues → `payment.completed.dlq` — you will see 1 message.
+
+---
+
+### Testing Idempotency
+
+After a successful notification is processed, publish the same event again to RabbitMQ. The worker will:
+1. Find `notification:processed:{event_id}` key in Redis.
+2. Log `duplicate event, skipping`.
+3. ACK without sending again.
+
+---
+
+### Environment Variables Reference (Assignment 4 additions)
+
+#### Order Service
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_ADDR` | `localhost:6379` | Redis address |
+| `ORDER_CACHE_TTL_SECONDS` | `300` | Cache TTL for order objects |
+| `RATE_LIMIT_ENABLED` | `false` | Enable rate limiter middleware |
+| `RATE_LIMIT_REQUESTS` | `10` | Max requests per window per IP |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window duration |
+
+#### Notification Service
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_ADDR` | `localhost:6379` | Redis address |
+| `NOTIFICATION_IDEMPOTENCY_TTL_SECONDS` | `86400` | TTL for processed event keys |
+| `NOTIFICATION_MAX_RETRIES` | `3` | Max retries on provider failure |
+| `NOTIFICATION_BACKOFF_BASE_SECONDS` | `2` | Base seconds for exponential backoff |
+| `PROVIDER_MODE` | `SIMULATED` | Email provider mode |
 
 ---
 

@@ -10,11 +10,15 @@ import (
 	"time"
 
 	"notification-service/internal/app"
+	"notification-service/internal/cache"
+	"notification-service/internal/provider"
 	"notification-service/internal/repository"
 	"notification-service/internal/transport/mq"
+	"notification-service/internal/usecase"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -48,7 +52,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	consumer, err := mq.NewConsumer(cfg.RabbitMQURL, eventRepo)
+	rdb := redis.NewClient(&redis.Options{
+		Addr: cfg.RedisAddr,
+	})
+	defer rdb.Close()
+
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer pingCancel()
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		slog.Warn("redis ping failed, idempotency store may be unavailable", "error", err)
+	} else {
+		slog.Info("redis connected", "addr", cfg.RedisAddr)
+	}
+
+	idempotencyTTL := time.Duration(cfg.IdempotencyTTLSeconds) * time.Second
+	idempotencyStore := cache.NewRedisIdempotencyStore(rdb, idempotencyTTL)
+
+	var emailSender provider.EmailSender
+	switch cfg.ProviderMode {
+	default:
+		slog.Info("using simulated email provider")
+		emailSender = provider.NewSimulatedEmailSender()
+	}
+
+	worker := usecase.NewNotificationWorker(emailSender, idempotencyStore, cfg.MaxRetries, cfg.BackoffBaseSeconds)
+
+	consumer, err := mq.NewConsumer(cfg.RabbitMQURL, worker)
 	if err != nil {
 		slog.Error("failed to create RabbitMQ consumer", "error", err)
 		os.Exit(1)
