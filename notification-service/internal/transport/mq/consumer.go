@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"notification-service/internal/domain"
-	"notification-service/internal/repository"
-	"sync"
+	"notification-service/internal/usecase"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -18,19 +17,15 @@ const (
 	mainQueue    = "payment.completed"
 	dlqName      = "payment.completed.dlq"
 	routingKey   = "payment.completed"
-	maxRetries   = 3
 )
 
 type Consumer struct {
 	conn    *amqp.Connection
 	channel *amqp.Channel
-	repo    *repository.PostgresEventRepository
-
-	mu       sync.Mutex
-	attempts map[string]int
+	worker  *usecase.NotificationWorker
 }
 
-func NewConsumer(url string, repo *repository.PostgresEventRepository) (*Consumer, error) {
+func NewConsumer(url string, worker *usecase.NotificationWorker) (*Consumer, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return nil, fmt.Errorf("dial rabbitmq: %w", err)
@@ -87,10 +82,9 @@ func NewConsumer(url string, repo *repository.PostgresEventRepository) (*Consume
 	}
 
 	return &Consumer{
-		conn:     conn,
-		channel:  ch,
-		repo:     repo,
-		attempts: make(map[string]int),
+		conn:    conn,
+		channel: ch,
+		worker:  worker,
 	}, nil
 }
 
@@ -126,57 +120,18 @@ func (c *Consumer) Start(ctx context.Context) error {
 func (c *Consumer) processMessage(ctx context.Context, msg amqp.Delivery) {
 	var event domain.PaymentEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil {
-		slog.Error("malformed event payload, sending to DLQ", "error", err)
+		slog.Error("malformed event payload, routing to DLQ", "error", err)
 		msg.Nack(false, false)
 		return
 	}
 
-	if event.CustomerEmail == "fail@example.com" {
-		c.mu.Lock()
-		c.attempts[event.EventID]++
-		attempt := c.attempts[event.EventID]
-		c.mu.Unlock()
-
-		slog.Warn("[Notification] Simulated failure",
-			"event_id", event.EventID,
-			"attempt", attempt,
-			"max_retries", maxRetries,
-		)
-
-		if attempt < maxRetries {
-			msg.Nack(false, true)
-		} else {
-			slog.Error("[Notification] Max retries exceeded — routing to DLQ",
-				"event_id", event.EventID,
-			)
-			c.mu.Lock()
-			delete(c.attempts, event.EventID)
-			c.mu.Unlock()
-			msg.Nack(false, false)
-		}
+	if err := c.worker.Handle(ctx, event); err != nil {
+		slog.Error("notification worker failed, routing to DLQ", "event_id", event.EventID, "error", err)
+		msg.Nack(false, false)
 		return
 	}
 
-	inserted, err := c.repo.MarkProcessed(ctx, event.EventID)
-	if err != nil {
-		slog.Error("idempotency DB error, requeuing", "event_id", event.EventID, "error", err)
-		msg.Nack(false, true)
-		return
-	}
-	if !inserted {
-		slog.Info("[Notification] Duplicate event — skipping", "event_id", event.EventID)
-		msg.Ack(false)
-		return
-	}
-
-	slog.Info(fmt.Sprintf(
-		"[Notification] Sent email to %s for Order #%s. Amount: $%.2f",
-		event.CustomerEmail,
-		event.OrderID,
-		float64(event.Amount)/100.0,
-	))
-
-	msg.Ack(false) 
+	msg.Ack(false)
 }
 
 func (c *Consumer) Close() error {
