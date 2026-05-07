@@ -18,6 +18,19 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   order-db:
     image: postgres:16-alpine
     container_name: order-db
@@ -69,7 +82,6 @@ services:
       timeout: 5s
       retries: 5
 
-
   payment-service:
     build:
       context: .
@@ -100,6 +112,8 @@ services:
         condition: service_healthy
       payment-service:
         condition: service_started
+      redis:
+        condition: service_healthy
     environment:
       HTTP_ADDR: ":8080"
       GRPC_ADDR: ":50052"
@@ -107,6 +121,11 @@ services:
       PAYMENT_GRPC_ADDR: "payment-service:50051"
       HTTP_TIMEOUT_SECONDS: "5"
       STREAM_POLL_INTERVAL_MS: "500"
+      REDIS_ADDR: "redis:6379"
+      ORDER_CACHE_TTL_SECONDS: "300"
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_REQUESTS: "10"
+      RATE_LIMIT_WINDOW_SECONDS: "60"
     ports:
       - "8080:8080"
       - "50052:50052"
@@ -122,9 +141,16 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DB_DSN: "postgres://postgres:110755@notification-db:5432/notification_db?sslmode=disable"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      REDIS_ADDR: "redis:6379"
+      NOTIFICATION_IDEMPOTENCY_TTL_SECONDS: "86400"
+      NOTIFICATION_MAX_RETRIES: "3"
+      NOTIFICATION_BACKOFF_BASE_SECONDS: "2"
+      PROVIDER_MODE: "SIMULATED"
     restart: unless-stopped
 
 volumes:
@@ -132,3 +158,4 @@ volumes:
   payment-db-data:
   notification-db-data:
   rabbitmq-data:
+  redis-data:
