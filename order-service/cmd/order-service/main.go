@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"order-service/internal/app"
+	"order-service/internal/cache"
 	"order-service/internal/client"
 	"order-service/internal/repository"
 	grpctransport "order-service/internal/transport/grpc"
@@ -23,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 
 	"google.golang.org/grpc"
 )
@@ -52,6 +54,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	rdb := redis.NewClient(&redis.Options{
+		Addr: cfg.RedisAddr,
+	})
+	defer rdb.Close()
+
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer pingCancel()
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		slog.Warn("redis ping failed, cache will be unavailable", "error", err)
+	} else {
+		slog.Info("redis connected", "addr", cfg.RedisAddr)
+	}
+
+	orderCache := cache.NewRedisOrderCache(rdb)
+
 	orderRepo := repository.NewPostgresOrderRepository(db)
 	if err := orderRepo.EnsureSchema(ctx); err != nil {
 		slog.Error("ensure schema", "error", err)
@@ -65,7 +82,8 @@ func main() {
 	}
 	defer paymentGRPCClient.Close()
 
-	orderUC := usecase.NewOrderUsecase(orderRepo, paymentGRPCClient)
+	cacheTTL := time.Duration(cfg.CacheTTLSeconds) * time.Second
+	orderUC := usecase.NewOrderUsecase(orderRepo, paymentGRPCClient, orderCache, cacheTTL)
 	grpcHandler := grpctransport.NewOrderGRPCHandler(db, cfg.StreamPollIntervalMs)
 
 	grpcServer := grpc.NewServer()
@@ -91,6 +109,11 @@ func main() {
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 	r.Use(httptransport.RequestIDMiddleware())
+
+	if cfg.RateLimitEnabled {
+		slog.Info("rate limiter enabled", "requests", cfg.RateLimitRequests, "window_seconds", cfg.RateLimitWindowSec)
+		r.Use(httptransport.RateLimiterMiddleware(rdb, cfg.RateLimitRequests, cfg.RateLimitWindowSec))
+	}
 
 	httpHandler.Register(r)
 

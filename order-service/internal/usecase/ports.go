@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"order-service/internal/domain"
+	"time"
 )
 
 type OrderRepository interface {
@@ -15,4 +16,10 @@ type OrderRepository interface {
 
 type PaymentAuthorizer interface {
 	Authorize(ctx context.Context, orderID string, amount int64) (transactionID string, paymentStatus string, err error)
+}
+
+type OrderCache interface {
+	GetOrder(ctx context.Context, id string) (*domain.Order, error)
+	SetOrder(ctx context.Context, order *domain.Order, ttl time.Duration) error
+	DeleteOrder(ctx context.Context, id string) error
 }

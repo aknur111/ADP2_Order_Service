@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"log/slog"
 	"order-service/internal/domain"
 	"strings"
 	"time"
@@ -12,10 +13,12 @@ import (
 type OrderUsecase struct {
 	repo          OrderRepository
 	paymentClient PaymentAuthorizer
+	cache         OrderCache
+	cacheTTL      time.Duration
 }
 
-func NewOrderUsecase(repo OrderRepository, paymentClient PaymentAuthorizer) *OrderUsecase {
-	return &OrderUsecase{repo: repo, paymentClient: paymentClient}
+func NewOrderUsecase(repo OrderRepository, paymentClient PaymentAuthorizer, cache OrderCache, cacheTTL time.Duration) *OrderUsecase {
+	return &OrderUsecase{repo: repo, paymentClient: paymentClient, cache: cache, cacheTTL: cacheTTL}
 }
 
 func (u *OrderUsecase) CreateOrder(
@@ -58,6 +61,9 @@ func (u *OrderUsecase) CreateOrder(
 	_, paymentStatus, err := u.paymentClient.Authorize(ctx, order.ID, order.Amount)
 	if err != nil {
 		_ = u.repo.UpdateStatus(ctx, order.ID, domain.OrderStatusFailed)
+		if delErr := u.cache.DeleteOrder(ctx, order.ID); delErr != nil {
+			slog.Error("cache invalidation error", "order_id", order.ID, "error", delErr)
+		}
 		order.Status = domain.OrderStatusFailed
 		return order, domain.ErrPaymentUnavailable
 	}
@@ -72,11 +78,31 @@ func (u *OrderUsecase) CreateOrder(
 		return nil, err
 	}
 
+	if delErr := u.cache.DeleteOrder(ctx, order.ID); delErr != nil {
+		slog.Error("cache invalidation error", "order_id", order.ID, "error", delErr)
+	}
+
 	return order, nil
 }
 
 func (u *OrderUsecase) GetOrder(ctx context.Context, id string) (*domain.Order, error) {
-	return u.repo.GetByID(ctx, id)
+	cached, cacheErr := u.cache.GetOrder(ctx, id)
+	if cacheErr != nil {
+		slog.Error("cache get error", "order_id", id, "error", cacheErr)
+	} else if cached != nil {
+		return cached, nil
+	}
+
+	order, err := u.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if setErr := u.cache.SetOrder(ctx, order, u.cacheTTL); setErr != nil {
+		slog.Error("cache set error", "order_id", id, "error", setErr)
+	}
+
+	return order, nil
 }
 
 func (u *OrderUsecase) CancelOrder(ctx context.Context, id string) (*domain.Order, error) {
@@ -96,5 +122,10 @@ func (u *OrderUsecase) CancelOrder(ctx context.Context, id string) (*domain.Orde
 		return nil, err
 	}
 	order.Status = domain.OrderStatusCancelled
+
+	if delErr := u.cache.DeleteOrder(ctx, id); delErr != nil {
+		slog.Error("cache invalidation error", "order_id", id, "error", delErr)
+	}
+
 	return order, nil
 }
